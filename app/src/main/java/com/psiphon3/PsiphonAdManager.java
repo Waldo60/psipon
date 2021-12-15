@@ -36,20 +36,11 @@ import com.freestar.android.ads.BannerAd;
 import com.freestar.android.ads.BannerAdListener;
 import com.freestar.android.ads.FreeStarAds;
 import com.freestar.android.ads.InterstitialAd;
+import com.freestar.android.ads.InterstitialAdListener;
 import com.google.auto.value.AutoValue;
-import com.mopub.common.MoPub;
-import com.mopub.common.SdkConfiguration;
-import com.mopub.common.SdkInitializationListener;
-import com.mopub.common.privacy.ConsentDialogListener;
-import com.mopub.common.privacy.PersonalInfoManager;
-import com.mopub.mobileads.MoPubErrorCode;
-import com.mopub.mobileads.MoPubInterstitial;
-import com.mopub.mobileads.MoPubView;
 import com.psiphon3.psiphonlibrary.Utils;
 
 import java.lang.ref.WeakReference;
-import java.util.HashMap;
-import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
@@ -94,22 +85,6 @@ public class PsiphonAdManager {
         void show();
 
         @AutoValue
-        abstract class MoPub implements InterstitialResult {
-            public void show() {
-                interstitial().show();
-            }
-
-            abstract MoPubInterstitial interstitial();
-
-            public abstract State state();
-
-            @NonNull
-            static InterstitialResult create(MoPubInterstitial interstitial, State state) {
-                return new AutoValue_PsiphonAdManager_InterstitialResult_MoPub(interstitial, state);
-            }
-        }
-
-        @AutoValue
         abstract class Freestar implements InterstitialResult {
 
             public void show() {
@@ -127,14 +102,9 @@ public class PsiphonAdManager {
         }
     }
 
-    // ----------Production values -----------
-    private static final String MOPUB_TUNNELED_LARGE_BANNER_PROPERTY_ID = "6efb5aa4e0d74a679a6219f9b3aa6221";
-    // MoPub test interstitial ID 24534e1901884e398f1253216226017e
-    private static final String MOPUB_TUNNELED_INTERSTITIAL_PROPERTY_ID = "1f9cb36809f04c8d9feaff5deb9f17ed";
-
     private BannerAd unTunneledFreestarBannerAdView;
-    private MoPubView tunneledMoPubBannerAdView;
-    private MoPubInterstitial tunneledMoPubInterstitial;
+    private BannerAd tunneledFreestarBannerAdView;
+    private InterstitialAd tunneledFreestarInterstitial;
 
     private final WeakReference<ViewGroup> bannerViewGroupWeakReference;
     private final WeakReference<Activity> activityWeakReference;
@@ -148,7 +118,7 @@ public class PsiphonAdManager {
     private Disposable showTunneledInterstitialDisposable;
     private final CompositeDisposable compositeDisposable = new CompositeDisposable();
 
-    private final Observable<InterstitialResult> tunneledMoPubInterstitialObservable;
+    private final Observable<InterstitialResult> tunneledFreestarInterstitialObservable;
 
     private TunnelState.ConnectionData interstitialConnectionData;
 
@@ -184,69 +154,64 @@ public class PsiphonAdManager {
                 .replay(1)
                 .refCount();
 
-        this.tunneledMoPubInterstitialObservable = SdkInitializer.getMoPub(appContext)
+        this.tunneledFreestarInterstitialObservable = SdkInitializer.getFreeStar(appContext)
                 .andThen(Observable.<InterstitialResult>create(emitter -> {
-                    if (tunneledMoPubInterstitial != null) {
-                        tunneledMoPubInterstitial.destroy();
+                    if (tunneledFreestarInterstitial != null) {
+                        tunneledFreestarInterstitial.destroyView();
                     }
                     Activity a = activityWeakReference.get();
                     if (a == null) {
                         if (!emitter.isDisposed()) {
-                            emitter.onError(new RuntimeException("MoPub failed to create interstitial: activity is null"));
+                            emitter.onError(new RuntimeException("Freestar failed to create tunneled interstitial: activity is null"));
                         }
                         return;
                     }
-                    tunneledMoPubInterstitial = new MoPubInterstitial(a, MOPUB_TUNNELED_INTERSTITIAL_PROPERTY_ID);
-                    // Set current client region keyword on the ad
-                    if (interstitialConnectionData != null) {
-                        tunneledMoPubInterstitial.setKeywords("client_region:" + interstitialConnectionData.clientRegion());
-                        Map<String, Object> localExtras = new HashMap<>();
-                        localExtras.put("client_region", interstitialConnectionData.clientRegion());
-                        tunneledMoPubInterstitial.setLocalExtras(localExtras);
-                    }
+                    tunneledFreestarInterstitial = new InterstitialAd(a, new InterstitialAdListener() {
 
-                    tunneledMoPubInterstitial.setInterstitialAdListener(new MoPubInterstitial.InterstitialAdListener() {
                         @Override
-                        public void onInterstitialLoaded(MoPubInterstitial interstitial) {
+                        public void onInterstitialLoaded(String placement) {
                             if (!emitter.isDisposed()) {
-                                emitter.onNext(InterstitialResult.MoPub.create(interstitial, InterstitialResult.State.READY));
+                                if (tunneledFreestarInterstitial.isReady()) {
+                                    emitter.onNext(InterstitialResult.Freestar.create(tunneledFreestarInterstitial, InterstitialResult.State.READY));
+                                } else {
+                                    emitter.onError(new RuntimeException("Freestar tunneled interstitial loaded but the interstitial is not ready"));
+                                }
                             }
                         }
 
                         @Override
-                        public void onInterstitialFailed(MoPubInterstitial interstitial, MoPubErrorCode errorCode) {
+                        public void onInterstitialFailed(String placement, int errorCode) {
                             if (!emitter.isDisposed()) {
-                                emitter.onError(new RuntimeException("MoPub interstitial failed: " + errorCode.toString()));
+                                emitter.onError(new RuntimeException("Freestar tunneled interstitial failed with error code: " + errorCode));
                             }
                         }
 
                         @Override
-                        public void onInterstitialShown(MoPubInterstitial interstitial) {
+                        public void onInterstitialShown(String placement) {
                             if (!emitter.isDisposed()) {
-                                emitter.onNext(InterstitialResult.MoPub.create(interstitial, InterstitialResult.State.SHOWING));
+                                emitter.onNext(InterstitialResult.Freestar.create(tunneledFreestarInterstitial, InterstitialResult.State.SHOWING));
                             }
                         }
 
                         @Override
-                        public void onInterstitialClicked(MoPubInterstitial interstitial) {
+                        public void onInterstitialClicked(String placement) {
                         }
 
                         @Override
-                        public void onInterstitialDismissed(MoPubInterstitial interstitial) {
+                        public void onInterstitialDismissed(String placement) {
                             if (!emitter.isDisposed()) {
                                 emitter.onComplete();
                             }
                         }
                     });
-                    if (tunneledMoPubInterstitial.isReady()) {
-                        if (!emitter.isDisposed()) {
-                            emitter.onNext(InterstitialResult.MoPub.create(tunneledMoPubInterstitial, InterstitialResult.State.READY));
+                    if (!emitter.isDisposed()) {
+                        emitter.onNext(InterstitialResult.Freestar.create(tunneledFreestarInterstitial, InterstitialResult.State.LOADING));
+                        AdRequest adRequest = new AdRequest(a);
+                        // Set current client region keyword on the ad
+                        if (interstitialConnectionData != null) {
+                            adRequest.addCustomTargeting("client_region", interstitialConnectionData.clientRegion());
                         }
-                    } else {
-                        if (!emitter.isDisposed()) {
-                            emitter.onNext(InterstitialResult.MoPub.create(tunneledMoPubInterstitial, InterstitialResult.State.LOADING));
-                            tunneledMoPubInterstitial.load();
-                        }
+                        tunneledFreestarInterstitial.loadAd(adRequest, "tunneled_interstitial_p1");
                     }
                 }))
                 .replay(1)
@@ -376,56 +341,55 @@ public class PsiphonAdManager {
                 completable = Completable.complete();
                 break;
             case TUNNELED:
-                completable = SdkInitializer.getMoPub(appContext).andThen(Completable.fromAction(() -> {
+                completable = SdkInitializer.getFreeStar(appContext).andThen(Completable.fromAction(() -> {
                     // Call 'destroy' on old instance before grabbing a new one to perform a
                     // proper cleanup so we are not leaking receivers, etc.
-                    if (tunneledMoPubBannerAdView != null) {
-                        tunneledMoPubBannerAdView.destroy();
+                    if (tunneledFreestarBannerAdView != null) {
+                        tunneledFreestarBannerAdView.destroyView();
                     }
-                    tunneledMoPubBannerAdView = new MoPubView(appContext);
-                    tunneledMoPubBannerAdView.setAdUnitId(MOPUB_TUNNELED_LARGE_BANNER_PROPERTY_ID);
-                    TunnelState.ConnectionData connectionData = adResult.connectionData();
-                    if (connectionData != null) {
-                        tunneledMoPubBannerAdView.setKeywords("client_region:" + connectionData.clientRegion());
-                        Map<String, Object> localExtras = new HashMap<>();
-                        localExtras.put("client_region", connectionData.clientRegion());
-                        tunneledMoPubBannerAdView.setLocalExtras(localExtras);
-                    }
-                    tunneledMoPubBannerAdView.setBannerAdListener(new MoPubView.BannerAdListener() {
+                    tunneledFreestarBannerAdView = new BannerAd(appContext);
+                    tunneledFreestarBannerAdView.setAdSize(AdSize.MEDIUM_RECTANGLE_300_250);
+                    tunneledFreestarBannerAdView.setBannerAdListener(new BannerAdListener() {
                         @Override
-                        public void onBannerLoaded(MoPubView banner) {
-                            if (tunneledMoPubBannerAdView != null &&
-                                    tunneledMoPubBannerAdView.getParent() == null) {
+                        public void onBannerAdLoaded(View bannerAd, String placement) {
+                            if (tunneledFreestarBannerAdView != null &&
+                                    tunneledFreestarBannerAdView.getParent() == null) {
                                 ViewGroup viewGroup = bannerViewGroupWeakReference.get();
                                 if (viewGroup != null) {
                                     viewGroup.removeAllViewsInLayout();
-                                    viewGroup.addView(tunneledMoPubBannerAdView);
+                                    viewGroup.addView(tunneledFreestarBannerAdView);
                                 }
                             }
                         }
 
                         @Override
-                        public void onBannerClicked(MoPubView arg0) {
+                        public void onBannerAdFailed(View bannerAd, String placement, int errorCode) {
                         }
 
                         @Override
-                        public void onBannerCollapsed(MoPubView arg0) {
+                        public void onBannerAdClicked(View bannerAd, String placement) {
                         }
 
                         @Override
-                        public void onBannerExpanded(MoPubView arg0) {
-                        }
-
-                        @Override
-                        public void onBannerFailed(MoPubView v, MoPubErrorCode errorCode) {
+                        public void onBannerAdClosed(View bannerAd, String placement) {
                         }
                     });
-                    tunneledMoPubBannerAdView.loadAd();
-                    tunneledMoPubBannerAdView.setAutorefreshEnabled(true);
+                    AdRequest adRequest = new AdRequest(appContext);
+                    // Set current client region keyword on the ad
+                    TunnelState.ConnectionData connectionData = adResult.connectionData();
+                    if (connectionData != null) {
+                        adRequest.addCustomTargeting("client_region", connectionData.clientRegion());
+                    }
+                    tunneledFreestarBannerAdView.loadAd(adRequest, "tunneled_banner_p1");
                 }));
                 break;
             case UNTUNNELED:
                 completable = SdkInitializer.getFreeStar(appContext).andThen(Completable.fromAction(() -> {
+                    // Call 'destroy' on old instance before grabbing a new one to perform a
+                    // proper cleanup so we are not leaking receivers, etc.
+                    if (unTunneledFreestarBannerAdView != null) {
+                        unTunneledFreestarBannerAdView.destroyView();
+                    }
                     unTunneledFreestarBannerAdView = new BannerAd(appContext);
                     unTunneledFreestarBannerAdView.setAdSize(AdSize.MEDIUM_RECTANGLE_300_250);
                     unTunneledFreestarBannerAdView.setBannerAdListener(new BannerAdListener() {
@@ -473,7 +437,7 @@ public class PsiphonAdManager {
                 break;
             case TUNNELED:
                 interstitialConnectionData = adResult.connectionData();
-                interstitialResultObservable = tunneledMoPubInterstitialObservable;
+                interstitialResultObservable = tunneledFreestarInterstitialObservable;
                 break;
             default:
                 throw new IllegalArgumentException("getInterstitialObservable: unhandled AdResult.Type: " + adType);
@@ -483,13 +447,13 @@ public class PsiphonAdManager {
     }
 
     private void destroyTunneledBanners() {
-        if (tunneledMoPubBannerAdView != null) {
-            ViewGroup parent = (ViewGroup) tunneledMoPubBannerAdView.getParent();
+        if (tunneledFreestarBannerAdView != null) {
+            ViewGroup parent = (ViewGroup) tunneledFreestarBannerAdView.getParent();
             if (parent != null) {
-                parent.removeView(tunneledMoPubBannerAdView);
+                parent.removeView(tunneledFreestarBannerAdView);
             }
-            tunneledMoPubBannerAdView.destroy();
-            tunneledMoPubBannerAdView = null;
+            tunneledFreestarBannerAdView.destroyView();
+            tunneledFreestarBannerAdView = null;
         }
     }
 
@@ -509,9 +473,9 @@ public class PsiphonAdManager {
     private void destroyAllAds() {
         destroyTunneledBanners();
         destroyUnTunneledBanners();
-        if (tunneledMoPubInterstitial != null) {
-            tunneledMoPubInterstitial.destroy();
-            tunneledMoPubInterstitial = null;
+        if (tunneledFreestarInterstitial != null) {
+            tunneledFreestarInterstitial.destroyView();
+            tunneledFreestarInterstitial = null;
         }
     }
 
@@ -520,27 +484,9 @@ public class PsiphonAdManager {
         compositeDisposable.dispose();
     }
 
-    private static ConsentDialogListener moPubConsentDialogListener() {
-        return new ConsentDialogListener() {
-            @Override
-            public void onConsentDialogLoaded() {
-                PersonalInfoManager personalInfoManager = MoPub.getPersonalInformationManager();
-                if (personalInfoManager != null) {
-                    personalInfoManager.showConsentDialog();
-                }
-            }
-
-            @Override
-            public void onConsentDialogLoadFailed(@NonNull MoPubErrorCode moPubErrorCode) {
-                Utils.MyLog.d("MoPub consent dialog load error: " + moPubErrorCode.toString());
-            }
-        };
-    }
-
     // A static ads SDKs initializer container
     static class SdkInitializer {
         private static Completable freeStar;
-        private static Completable moPub;
 
         public static Completable getFreeStar(Context context) {
             if (freeStar == null) {
@@ -570,57 +516,5 @@ public class PsiphonAdManager {
                         .doOnError(e -> Utils.MyLog.d("FreeStarAds SDK init error: " + e));
             }
             return freeStar;
-        }
-
-        // Note: need to be initialized with activity context for rewarded videos
-        public static Completable getMoPub(Context context) {
-            if (moPub == null) {
-                // MoPub SDK is also tracking GDPR status and will present a GDPR consent collection dialog if needed.
-                moPub = Completable.create(emitter -> {
-                    if (MoPub.isSdkInitialized()) {
-                        if (!emitter.isDisposed()) {
-                            emitter.onComplete();
-                        }
-                        return;
-                    }
-                    MoPub.setLocationAwareness(MoPub.LocationAwareness.DISABLED);
-                    SdkConfiguration.Builder builder = new SdkConfiguration.Builder(MOPUB_TUNNELED_LARGE_BANNER_PROPERTY_ID);
-                    SdkConfiguration sdkConfiguration = builder.build();
-                    SdkInitializationListener sdkInitializationListener = () -> {
-                        final PersonalInfoManager personalInfoManager = MoPub.getPersonalInformationManager();
-                        if (personalInfoManager != null) {
-                            // subscribe to consent change state event
-                            personalInfoManager.subscribeConsentStatusChangeListener((oldConsentStatus, newConsentStatus, canCollectPersonalInformation) -> {
-                                if (personalInfoManager.shouldShowConsentDialog()) {
-                                    personalInfoManager.loadConsentDialog(moPubConsentDialogListener());
-                                }
-                            });
-                            // If consent is required load the consent dialog
-                            if (personalInfoManager.shouldShowConsentDialog()) {
-                                personalInfoManager.loadConsentDialog(moPubConsentDialogListener());
-                            }
-                            if (!emitter.isDisposed()) {
-                                emitter.onComplete();
-                            }
-                        } else {
-                            if (!emitter.isDisposed()) {
-                                emitter.onError(new RuntimeException("MoPub.getPersonalInformationManager is null"));
-                            }
-                        }
-                    };
-                    MoPub.initializeSdk(context, sdkConfiguration, sdkInitializationListener);
-                })
-                        // This initializer may be called concurrently from both the interstitial
-                        // and the banner loaders. The second time that this is called,
-                        // MoPub.initializeSdk returns and the SdkInitializationListener is not
-                        // invoked, and this Completable does not complete normally.
-                        // In this case, we will timeout and retry.
-                        .ambWith(Completable.timer(500, TimeUnit.MILLISECONDS)
-                                .andThen(Completable.error(new TimeoutException("MoPub init timed out"))))
-                        .subscribeOn(AndroidSchedulers.mainThread())
-                        .retryWhen(Flowable::retry)
-                        .doOnError(e -> Utils.MyLog.d("MoPub SDK init error: " + e));
-            }
-            return moPub;
         }
     }}
